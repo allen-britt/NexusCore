@@ -1,0 +1,58 @@
+version: "3.9"
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: nexuscore-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
+  aggregator:
+    build:
+      context: ./core/AggreGator
+      dockerfile: backend/Dockerfile
+    container_name: nexuscore-aggregator
+    restart: unless-stopped
+    environment:
+      PYTHONUNBUFFERED: "1"
+    ports:
+      - "8100:8100"
+    depends_on:
+      - ollama
+
+  apex-backend:
+    build:
+      context: ./core/APEX/backend
+    container_name: nexuscore-apex-backend
+    restart: unless-stopped
+    env_file:
+      - ./core/APEX/backend/.env
+    environment:
+      AGGREGATOR_BASE_URL: http://aggregator:8100
+      LLM_MISTRAL_URL: http://ollama:11434
+      LLM_PHI3_URL: http://ollama:11434
+      PYTHONUNBUFFERED: "1"
+    ports:
+      - "8000:8000"
+    depends_on:
+      - aggregator
+      - ollama
+
+  apex-frontend:
+    build:
+      context: ./core/APEX/frontend
+    container_name: nexuscore-apex-frontend
+    restart: unless-stopped
+    environment:
+      APEX_INTERNAL_API_BASE_URL: http://apex-backend:8000
+      NEXT_PUBLIC_APEX_API_BASE_URL: http://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - apex-backend
+
+volumes:
+  ollama_data:
