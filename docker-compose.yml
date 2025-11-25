@@ -5,10 +5,19 @@ services:
     image: ollama/ollama:latest
     container_name: nexuscore-ollama
     restart: unless-stopped
+    environment:
+      OLLAMA_USE_GPU: "true"
     ports:
       - "11434:11434"
     volumes:
       - ollama_data:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
 
   aggregator:
     build:
@@ -22,6 +31,8 @@ services:
       - "8100:8100"
     depends_on:
       - ollama
+    volumes:
+      - ./core/AggreGator/backend/data:/app/data
 
   apex-backend:
     build:
@@ -40,6 +51,8 @@ services:
     depends_on:
       - aggregator
       - ollama
+    volumes:
+      - ./core/APEX/backend/data:/app/data
 
   apex-frontend:
     build:

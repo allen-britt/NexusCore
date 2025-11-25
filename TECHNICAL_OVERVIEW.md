@@ -1,204 +1,262 @@
-# NexusCore / AggreGator / APEX – Technical Overview
+# NexusCore / AggreGator / APEX – Technical Overview (Expanded)
 
-## Tech Stack Summary
+## 1. High-Level Architecture
 
-| Layer | Technologies |
+```
+                        ┌─────────────────────────────────────┐
+                        │             Operator                │
+                        │     (Browser: http://localhost:3000)│
+                        └─────────────────────────────────────┘
+                                           │
+                                           │  HTTP (JSON, fetch)
+                                           ▼
+                   ┌─────────────────────────────────────────────┐
+                   │            APEX Frontend (Next.js)          │
+                   │  - Next.js 14 (App Router)                  │
+                   │  - React 18, TypeScript, Tailwind           │
+                   │  - Runs on :3000                            │
+                   │                                             │
+                   │  API base URL resolution:                   │
+                   │    - SSR: APEX_INTERNAL_API_BASE_URL        │
+                   │            → e.g. http://apex-backend:8000  │
+                   │    - Browser: NEXT_PUBLIC_APEX_API_BASE_URL │
+                   │            → e.g. http://localhost:8000     │
+                   └─────────────────────────────────────────────┘
+                                           │
+                                           │ HTTP (REST / JSON)
+                                           ▼
+                   ┌─────────────────────────────────────────────┐
+                   │            APEX Backend (FastAPI)           │
+                   │  - FastAPI, SQLAlchemy, Pydantic v2         │
+                   │  - Runs on :8000                            │
+                   │  - Routers: missions, documents,            │
+                   │    mission_datasets, analysis, agent,       │
+                   │    report, settings, status, models         │
+                   │                                             │
+                   │  Key dependencies:                          │
+                   │    - PostgreSQL (missions, docs, runs, …)   │
+                   │    - AggreGator (profiling, KG)             │
+                   │    - LLM (Ollama)                           │
+                   └─────────────────────────────────────────────┘
+                        │                 │                 │
+                        │                 │                 │
+                        │ HTTP            │ HTTP            │ LLM API
+                        ▼                 ▼                 ▼
+     ┌─────────────────────────┐   ┌───────────────────┐   ┌────────────────────┐
+     │   PostgreSQL (APEX)     │   │ AggreGator (API)  │   │   Ollama (LLM)     │
+     │ - Mission metadata      │   │ - FastAPI @ :8100 │   │ - :11434           │
+     │ - Documents / runs      │   │ - /health         │   │ - /api/chat        │
+     │ - MissionDatasets       │   │ - /profile        │   │                    │
+     └─────────────────────────┘   │   (profiling/KG)  │   └────────────────────┘
+                                   │                   │
+                                   │                   │
+                                   ▼                   │
+                     ┌────────────────────────┐        │
+                     │ DuckDB Parquet Storage │        │
+                     │  (AggreGator data &    │        │
+                     │   knowledge graph)     │        │
+                     └────────────────────────┘        │
+
+
+        ┌────────────────────────────────────────────────────────────────┐
+        │                    NexusCore Orchestration                     │
+        │  (external Python services / CLI / automation runners)        │
+        │                                                                │
+        │  - `nexuscore/services/ingestion.py`                           │
+        │     → Orchestrates:                                           │
+        │        1) Fetch / profile from AggreGator                      │
+        │        2) Transform via SmartTransformer / DataDictionary      │
+        │        3) Push mission docs/datasets into APEX                 │
+        │                                                                │
+        │  - `nexuscore/core/aggregator/client.py`                       │
+        │     base_url: http://localhost:8100  (host-mode default)       │
+        │                                                                │
+        │  - `nexuscore/core/apex/client.py`                             │
+        │     base_url: http://localhost:8000  (host-mode default)       │
+        └────────────────────────────────────────────────────────────────┘
+```
+
+## 2. Tech Stack (Detailed)
+
+| Layer | Technologies / Details |
 | --- | --- |
-| Backend (APEX) | FastAPI, SQLAlchemy, Pydantic v2, httpx, PostgreSQL (via SQLAlchemy models), pytest |
-| Data Fabric (AggreGator) | FastAPI, DuckDB, Pandas, PyArrow, YAML source registry, Matplotlib, Playbook automation |
-| NexusCore Orchestration | Python 3.11 services, Pydantic models, aiohttp/httpx clients linking AggreGator → APEX |
-| Frontend | Next.js 14 (App Router), React 18, TypeScript, Tailwind CSS |
-| Tooling | pnpm, Node 18+, eslint, prettier, dotenv, pytest-asyncio |
-| Storage | DuckDB parquet datasets (AggreGator), PostgreSQL (APEX) |
+| Frontend (APEX) | Next.js 14 (App Router), React 18, TypeScript, Tailwind CSS, Node 18, fetch-based API client (`lib/api.ts`). |
+| Backend (APEX) | FastAPI, SQLAlchemy, Pydantic v2, httpx, PostgreSQL, pytest / pytest-asyncio. |
+| Data Fabric | AggreGator: FastAPI, DuckDB, Pandas, PyArrow, YAML source registry, Matplotlib, NL→SQL, playbooks, KG. |
+| NexusCore Orchestration | Python 3.11+, Pydantic, aiohttp/httpx clients, Pandas. Bridges AggreGator → APEX. |
+| LLM | Ollama (local) with `mistral`/`phi3` via Ollama chat API. |
+| Storage | PostgreSQL (missions, docs, agent runs, datasets); DuckDB/parquet (AggreGator data + KG). |
+| Tooling | pnpm / npm, Node 18+, Docker & docker-compose, uvicorn, dotenv, pytest-asyncio, Python logging. |
+| Deployment | Docker images for Ollama, AggreGator, APEX backend, APEX frontend; `docker-compose` for one-click demo. |
 
-## Integration Notes
+## 3. Runtime Topologies
 
-1. **AggreGator as data fabric**
-   - `edge-analytics/app.py`: orchestrates DuckDB storage, profiling, knowledge graph, streams.
-   - `source_registry.py` + `connectors.py`: declarative ingestion from files, APIs, Splunk, SQL, etc.
-   - `dictionary.py`: semantic tagging, FK detection, profiling metrics.
+### 3.1 Docker Demo Stack (recommended)
 
-2. **APEX as mission brain**
-   - `backend/app/models/__init__.py`: Missions, Documents, MissionDatasets, AgentRuns.
-   - `backend/app/api/mission_datasets.py`: POST/GET endpoints for mission datasets using DatasetBuilderService.
-   - `backend/app/services/dataset_builder_service.py`: will call AggreGator `/profile` for canonical profiling (currently pending wiring in this workspace clone).
-   - `frontend/app/missions/[id]/page.tsx`: mission dashboard listing documents, agent status, guardrails, datasets.
+`docker-compose.yml` launches:
 
-3. **NexusCore orchestration**
-   - `nexuscore/services/ingestion.py`: `NexusIngestionService` ties AggreGator fetch → AI transformer → APEX ingestion.
-   - `nexuscore/core/aggregator/client.py` & `core/apex/client.py`: async HTTP clients with retry/error handling.
-   - `nexuscore/core/ai/transformer.py`: SmartTransformer for low/no-code transformations.
+- Ollama → `11434:11434`
+- AggreGator → `8100:8100`
+- APEX backend → `8000:8000`
+- APEX frontend → `3000:3000`
 
-4. **Latest integration updates**
-   - AggreGator (`core/AggreGator/edge-analytics/app.py`) now exposes `POST /profile` that accepts `{"sources": [{"type": "json_inline", "data": ...}]}` and returns normalized table/column metadata with semantic hints.
-   - Upcoming work: APEX `DatasetBuilderService` will forward mission dataset sources to AggreGator `/profile`, store the returned profile on `MissionDataset.profile`, and expose table counts in the mission UI.
+Internal network contracts:
 
-## Current Status (Nov 19, 2025)
-- ✅ **Phase 1 complete.** Mission datasets now carry `semantic_profile`, the SemanticProfiler service + API endpoint persist LLM-derived annotations, and the frontend renders/refreshes column semantics per dataset.
-- ✅ **Phase 2 complete.** `GapAnalysisService`, `/missions/{id}/analysis/gaps`, and the `GapsPriorities` UI deliver structured gaps, priorities, and regeneration controls, cached on missions.
-- ✅ **Phase 3 backend + mission experience online.** Template configs live in `app/templates/report_templates.json`, `ReportTemplateEngine` powers `/reports/templates` + `POST /missions/{id}/reports`, and the mission UI now includes `TemplateReportPanel` + `TemplateReportGenerator` for ad-hoc rendering alongside the new policy-aware `GapAnalysisPanel` that uses `POST /missions/{id}/gap_analysis`.
-- ✅ **Operational UX polish underway.** Mission detail pages now use a tabbed layout (Overview/Data/Analysis/Reports) plus a live `SystemStatusBar` that surfaces backend/AggreGator/LLM health. Dedicated report-page UX + exports remain open, along with future Phases 4–6.
-- ⚠️ **Phase 3 report-page UX + exports still pending.** Need to surface template selection/results on the dedicated report page, add persistence/export hooks, and extend templates set. Decision-support, LEO packaging, and broader ops polish continue to be tracked in Phases 4–6.
+- Frontend → Backend (SSR): `http://apex-backend:8000`
+- Backend → AggreGator: `http://aggregator:8100`
+- Backend → LLM: `http://ollama:11434`
 
-## Current End-to-End Flow
-1. **Mission creation & context build** – Operator registers a mission (authority, domains, docs, datasets). Mission context service unifies mission, docs, entities, events, and datasets for downstream LLM calls.
-2. **Data onboarding** – Operator posts datasets via `/missions/{id}/datasets` with inline source specs. `DatasetBuilderService` (when wired) will proxy those specs to AggreGator `/profile`, and today profiles + semantic profiles reside on each dataset for UI/LLM use.
-3. **Agentic analysis** – `RunAnalysisButton` triggers backend agents. Gap analysis can be regenerated via `GET /missions/{id}/analysis/gaps?force_regen=true` (legacy KG flavor) or with the new rule-based + LLM workflow via `POST /missions/{id}/gap_analysis`, which produces `GapAnalysisResult` objects feeding both the backend cache and the mission UI.
-4. **Template-driven reporting** – Mission operators fetch available templates (`GET /reports/templates?mission_id=...`) and render policy-aware intel products through `TemplateReportPanel` (JSON view) or `TemplateReportGenerator` (sectioned LLM output built via `POST /missions/{id}/reports/from_template`).
-5. **Mission command center UI** – The mission detail page now presents:
-   - `SystemStatusBar` (Backend, AggreGator, LLM health via `/status`).
-   - Tabbed sections: Overview (MissionDetail, agent + guardrails), Data (documents + datasets), Analysis (GapsPriorities, GapAnalysisPanel, Entities/Events), Reports (TemplateReportPanel + generator).
-   - All tabs share the same fetched mission payload so navigation is instant and keeps context consistent during ops.
-6. **NexusCore orchestration** – External orchestrators use the same contracts (missions, datasets, template + gap endpoints) to seed missions, build datasets, and dispatch reports, ensuring parity between manual UI workflows and automated runs.
+Host access:
 
-## Roadmap / TODO
+- Browser → Frontend: `http://localhost:3000`
+- Frontend (browser bundle) → Backend: `http://localhost:8000`
+- Backend reaches AggreGator / LLM via container DNS names (`aggregator`, `ollama`).
 
-This section tracks the staged build-out of NexusCore as a decision-support platform that fuses:
+### 3.2 Local Development (no Docker)
 
-- AggreGator’s data fabric + knowledge graph
-- APEX’s mission-centric agentic analysis
-- Local LLMs (Ollama) for intel reasoning, gap detection, and planning
+Recommended services:
 
-### Phase 1 – Mission datasets + KG integration (foundation)
+- APEX backend → `http://localhost:8000`
+- AggreGator → `http://localhost:8100`
+- Ollama → `http://localhost:11434`
+- APEX frontend (`npm run dev`) → `http://localhost:3000`
 
-**Goals**
+Minimum environment variables:
 
-- Treat AggreGator as the single source of truth for profiles + knowledge graph.
-- Make APEX agentic analysis aware of datasets and KG context, not just raw documents.
+**Frontend `.env.local`:**
 
-**Tasks**
+```
+NEXT_PUBLIC_APEX_API_BASE_URL=http://localhost:8000
+APEX_INTERNAL_API_BASE_URL=http://localhost:8000
+```
 
-1. [x] **MissionDataset enrichment** — `semantic_profile` column + schema landed in `models/__init__.py` and Pydantic DTOs, storing alongside AggreGator `profile`.
-2. [x] **KG access from APEX** — `services/kg_client.py` wraps AggreGator KG endpoints with helpers for graph, neighborhood, metrics, etc.
-3. [x] **Semantic profiling endpoint** — `POST /missions/{mission_id}/datasets/{dataset_id}/semantic_profile` invokes `SemanticProfiler` (LLM-backed) and persists responses.
-4. [x] **Frontend hooks** — `MissionDatasetList` shows semantic annotations per column and exposes a “Generate semantic profile” action per dataset.
+**Backend (APEX):**
 
----
+```
+AGGREGATOR_BASE_URL=http://localhost:8100
+LLM_MISTRAL_URL=http://localhost:11434
+LLM_PHI3_URL=http://localhost:11434
+# DATABASE_URL, SECRET_KEY, etc.
+```
 
-### Phase 2 – KG-aware gap analysis and priorities
+## 4. Core Integration Flows
 
-**Goals**
+### 4.1 Mission-Centric Flow
 
-- Use the KG and mission datasets to identify **what’s missing**, **what’s conflicting**, and **what’s most important**.
-- Make this available as clean JSON that the frontend and export/report flows can consume.
+1. **Mission creation (APEX)**
+   - Operator creates a mission via frontend → `/missions` (APEX backend).
+   - Backend persists mission, metadata, and timestamps in PostgreSQL.
 
-**Tasks**
+2. **Data onboarding & profiling**
+   - Operator adds datasets via `/missions/{id}/datasets` with inline source specs or references.
+   - `DatasetBuilderService` (planned wiring) calls AggreGator `/profile` with payloads such as `{"sources": [{"type": "json_inline", "data": ...}]}`.
+   - AggreGator returns table/column profiles, semantic metadata, and potential foreign keys.
+   - APEX stores raw profile + `semantic_profile` (LLM-derived or rule-based). Frontend renders annotations per column with re-profiling controls.
 
-1. [x] **Gap analysis service (backend)** — `gap_analysis_service.py` fuses KG summaries, datasets, semantic profiles, and (optionally) LLM conflict checks into normalized gap arrays.
-2. [x] **Gap analysis endpoint** — `GET /missions/{mission_id}/analysis/gaps` caches results on the mission model and supports `force_regen` for fresh runs.
-3. [x] **Priority entities / events** — service now returns `priorities.entities`, `priorities.events`, and a rationale string alongside gap findings.
-4. [x] **Frontend gap view** — the mission page renders `GapsPriorities` with refresh controls and sections for missing data, timeline gaps, conflicts, unknowns, quality findings, and priorities.
+3. **Analysis & gap detection**
+   - Operator triggers analysis via `RunAnalysisButton` / gap analysis actions.
+   - APEX uses mission context (docs, datasets, semantic profiles, KG) plus Ollama-backed services to extract facts, detect conflicts, and surface gaps.
+   - Results become `GapAnalysisResult` objects exposed via:
+     - `GET /missions/{id}/analysis/gaps` (legacy flavor)
+     - `POST /missions/{id}/gap_analysis` (rule-based + LLM)
 
----
+4. **Reporting**
+   - Template configs live in `backend/app/templates/report_templates.json` (e.g., `pattern_of_life`, `incident_readout`).
+   - `ReportTemplateEngine` aggregates mission context and runs sections through the LLM.
+   - Endpoints:
+     - `GET /reports/templates?mission_id=...`
+     - `POST /missions/{id}/reports?template=...`
+   - Frontend surfaces outputs via `TemplateReportPanel` and `TemplateReportGenerator` (future export hooks planned).
 
-### Phase 3 – Intel product templates (report generation)
+5. **NexusCore orchestration**
+   - `nexuscore/services/ingestion.py` automates AggreGator fetch → SmartTransformer/DataDictionary transforms → APEX ingestion.
+   - Clients:
+     - `nexuscore/core/aggregator/client.py` (default `http://localhost:8100`)
+     - `nexuscore/core/apex/client.py` (default `http://localhost:8000`)
 
-**Goals**
+## 5. Health & Status Path
 
-- Turn the analysis + KG + datasets into **repeatable, named intel products**, not free-form LLM paragraphs.
-- Support multiple template types (ISR, cyber, LEO, etc.).
+### 5.1 `/status` endpoint
 
-**Tasks**
+- Implemented in `backend/app/api/status.py`.
+- Response shape:
 
-1. [x] **Template config model** — JSON configs live in `backend/app/templates/report_templates.json` (e.g., `pattern_of_life`, `incident_readout`).
-2. [x] **Template engine (backend)** — `ReportTemplateEngine` aggregates mission/doc/dataset/gap context and renders each template section via `LLMClient` with fallback stubs.
-3. [x] **Template endpoints** — `/reports/templates` enumerates configs, and `POST /missions/{mission_id}/reports?template=...` returns rendered sections + metadata.
-4. [ ] **Frontend report UX** — Mission page now embeds `TemplateReportGenerator` + `TemplateReportPanel`, but the dedicated “Report” page still needs template selection, stable section layouts, and export options.
+```json
+{
+  "overall": "ok" | "degraded",
+  "backend": "ok",
+  "aggregator": "ok" | "error",
+  "llm": "ok" | "error"
+}
+```
 
----
+- Health checks:
+  - Backend: implicit (request handled).
+  - AggreGator: `GET {AGGREGATOR_BASE_URL}/health`.
+  - LLM: trivial "Say OK" chat via `LLMClient`.
+- Frontend polls via `fetchSystemStatus()` to render `SystemStatusBar` on mission pages.
 
-### Phase 4 – Decision-support & COA planning
+### 5.2 Known LLM config issue
 
-**Goals**
+- `config_llm.get_llm_config()` currently calls `_resolve_base_url()`, which is undefined → `NameError` when config is accessed (`is_demo_mode()` and others).
+- **Fix recommendation:** implement `_resolve_base_url()` or inline logic so that:
+  - Local Ollama usage derives `base_url` from the active `LocalLlmModel` (`LLM_MISTRAL_URL` / `LLM_PHI3_URL`).
+  - Optional override: `APEX_LLM_BASE_URL` for OpenAI-style endpoints.
 
-- Move from “describe the situation” to **“help decide what to do next.”**
-- Support different decision frames (ISR, cyber, LEO casework, etc.).
+## 6. Value-Add: Contracts & Gotchas
 
-**Tasks**
+### 6.1 Contract table
 
-1. **Decision engine service**
-   - Add `DecisionSupportService` that:
-     - Reads gap analysis, priorities, and mission objectives.
-     - Calls `LLMClient` to generate:
-       - Courses of Action (COAs).
-       - Pros/cons and risk scores.
-       - Recommended COA with justification.
+| Concern | Where Set | Docker Value | Host Dev Value |
+| --- | --- | --- | --- |
+| APEX SSR → Backend | `APEX_INTERNAL_API_BASE_URL` (frontend env) | `http://apex-backend:8000` | `http://localhost:8000` |
+| Browser → Backend | `NEXT_PUBLIC_APEX_API_BASE_URL` | `http://localhost:8000` | `http://localhost:8000` |
+| Backend → AggreGator | `AGGREGATOR_BASE_URL` | `http://aggregator:8100` | `http://localhost:8100` |
+| Backend → LLM | `LLM_MISTRAL_URL`, `LLM_PHI3_URL` | `http://ollama:11434` | `http://localhost:11434` |
+| LLM active model | `APEX_ACTIVE_LLM_MODEL` (optional) | `mistral` or `phi3` | same |
 
-2. **Decision endpoints**
-   - `POST /missions/{mission_id}/decisions/coa`
-   - Optional payload to specify:
-     - Time pressure (low/med/high).
-     - Rules of engagement / constraints.
-     - Focus entity or area.
+### 6.2 Common failure modes
 
-3. **Frontend decision panel**
-   - “Decision Support” card on the mission page:
-     - List COAs.
-     - Show risk/benefit summary.
-     - Clearly separate “AI suggestion” from human authority.
+1. **Frontend calls itself instead of backend**
+   - Symptom: `/missions` requests hit `http://localhost:3000/missions` → 404.
+   - Cause: `NEXT_PUBLIC_APEX_API_BASE_URL` unset.
+   - Fix: configure `.env.local` as above.
 
-4. **Use-case profiles**
-   - Add the concept of a “use-case profile” (ISR, cyber, LEO).
-   - Profiles influence:
-     - Which templates are available.
-     - How gap analysis and decision prompts are phrased.
-     - Which KG schemas/fields are emphasized.
+2. **Backend `/status` shows AggreGator error**
+   - Symptom: `aggregator: "error"`, `overall: "degraded"`.
+   - Cause: AggreGator down or wrong `AGGREGATOR_BASE_URL`.
+   - Fix: start AggreGator or adjust env.
 
----
+3. **Backend `/status` shows LLM error**
+   - Causes: Ollama not running, missing model pull, or `_resolve_base_url` bug.
+   - Fix: start Ollama, pull models, patch config logic.
 
-### Phase 5 – LEO-focused packaging and UX
+4. **NexusCore orchestration cannot reach services**
+   - Symptom: connection refused from NexusCore runner.
+   - Cause: running inside container but using `localhost` URLs.
+   - Fix: use Docker DNS (`apex-backend`, `aggregator`).
 
-**Goals**
+## 7. Future Enhancements (Optional)
 
-- Make NexusCore feel like a purpose-built **investigative assistant** for local law enforcement.
-- Reuse the same core engine with different templates and labels.
+### Security
 
-**Tasks**
+1. Introduce auth between frontend ↔ backend (API keys or OIDC) for non-demo deployments.
+2. Add TLS termination via Nginx / Traefik / cloud LB.
 
-1. **LEO schema & KG extensions**
-   - Define LEO-relevant entity/edge types (case, suspect, victim, location, incident, gang, POI).
-   - Extend AggreGator KG mapping to support LEO data sources (CAD exports, RMS, OSINT).
+### Observability
 
-2. **LEO intel templates**
-   - Examples:
-     - Case summary
-     - POI timeline
-     - Crime series correlation
-     - Gang network overview
-     - Warrant-support narrative (with clear disclaimers)
+1. Expand `/status` with last-analysis timestamps and mission counts.
+2. Add structured logging + traces (OpenTelemetry) for cross-service flows.
 
-3. **Role-based UX**
-   - Simple “Detective view” with:
-     - Case list
-     - Linked entities/locations
-     - AI-generated “Where to look next” suggestions.
+### Scalability
 
-4. **Policy / compliance hooks (future)**
-   - Hooks for audit logging and usage justification.
-   - Guardrails for prohibited use cases based on department policy.
+1. Split AggreGator into read-only vs write-heavy instances if necessary.
+2. Add worker queue for long-running analyses/report generation.
 
----
+### Profile & KG Surfacing
 
-### Phase 6 – Ops / observability / polish
+1. Expose richer KG endpoints in APEX (via `kg_client`) for UI queries such as:
+   - "Show graph neighborhood for entity X"
+   - "Highlight entities involved in top N prioritized gaps"
+2. Extend UI to visualize KG neighborhoods and prioritized entities.
 
-**Goals**
-
-- Make the stack easy to deploy, monitor, and demo.
-
-**Tasks**
-
-1. **Health & status surfaces**
-   - Expand `/status` payload to include:
-     - KG connectivity
-     - Template registry status
-     - Most recent analysis timestamps.
-
-2. [x] **Frontend status indicators**
-   - Mission detail page now shows `SystemStatusBar` (Backend / AggreGator / LLM) refreshed every 15 s, matching the `/status` endpoint payload.
-
-3. **Docker & one-click demo**
-   - Keep docker-compose stack aligned with:
-     - Ollama models
-     - AggreGator backend
-     - APEX backend + frontend
-   - Provide a minimal “demo dataset + mission” seed so investors/LEOs can see value immediately.
