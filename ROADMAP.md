@@ -6,34 +6,26 @@ Goal: Make NexusCore look intelligent, integrated, and mission-ready.
 
 Why this matters: Gives the illusion of deep domain knowledge fast.
 
-OSINT report template
+- ✅ OSINT report template (frontend picker + preview wired)
+- ✅ HUMINT template
+- ✅ GEOINT template
+- ✅ SIGINT template
+- ✅ LEO Case template (“Case Pack”)
+- ✅ Commander decision sheet with blind-spot/policy context
+- ✅ Auto-filled sections using the LLM surfaced in the mission page "Generate intel product" flow with prose-styled HTML preview and TemplateReportDebugPanel option
 
-HUMINT template
-
-GEOINT template
-
-SIGINT template
-
-LEO Case template (“Case Pack”)
-
-Auto-filled sections using the LLM
-
-Dropdown on the mission page:
-Generate → Select Template → LLM fills sections
-
-Investor Demo Angle: “The system generates full structured intelligence reports instantly.”
+Remaining backend polish: add `_clean_markdown` helper + stricter system prompts in `template_report_service` to keep outputs concise and professional.
 
 0.2. Semantic Profiling + Dataset Annotations (Already Wired—UI Polish)
 
+Recent additions: mission decision context sidebar now exposes blind-spot severity dots, policy/guardrail summaries, and collapsible COAs so semantic annotations translate directly into commander-readable insights.
+
 Make sure the UI clearly displays:
 
-Column semantics
-
-Confidence
-
-Notes
-
-“Regenerate semantics” button
+- Column semantics
+- Confidence
+- Notes
+- “Regenerate semantics” button
 
 Investor Demo Angle:
 “This system understands your data automatically and begins connecting the dots.”

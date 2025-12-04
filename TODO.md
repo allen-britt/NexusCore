@@ -5,8 +5,12 @@
 - [x] Add authority + INT selectors with inline validation to `MissionForm`
 - [x] Render authority + INT badges, guardrail alerts, and policy tooltips across mission list/detail/tabs
 - [x] Surface guardrail warnings + policy footprints inside AgentSummary, TemplateReportGenerator, and mission reports
+- [x] Ship templated report picker/preview polish (card-based selection, dismissible errors, apex prose preview)
+- [x] Add decision intelligence sidebar upgrades (severity dots, risk/policy badges, collapsible COAs)
 - [ ] Wire guardrail-aware Missions API responses into frontend caching/state to avoid double fetches
 - [ ] Finish Docker Compose hardening (health checks, GPU syntax already fixed, ensure `docker compose up -d` succeeds reliably)
+- [ ] Add `_clean_markdown` helper + prompt-tightening to `template_report_service` for higher-quality markdown
+
 
 ## AggreGator Mission Brain Integration
 - [x] Extend Mission model + schema with `kg_namespace` (default `mission-{mission_id}`) and persist authority/INT metadata
