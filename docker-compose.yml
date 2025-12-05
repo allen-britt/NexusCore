@@ -75,6 +75,7 @@ services:
       LLM_MISTRAL_URL: http://ollama:11434
       LLM_PHI3_URL: http://ollama:11434
       PYTHONUNBUFFERED: "1"
+      BACKEND_CORS_ORIGINS: "http://localhost:3000,http://127.0.0.1:3000"
     ports:
       - "8000:8000"
     depends_on:
